@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "fireworks",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["-m", "http.server", "8229"],
+      "port": 8229
+    }
+  ]
+}

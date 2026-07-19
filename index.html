@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>焰火 · 烟花模拟器</title>
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <canvas id="bgCanvas"></canvas>
+  <canvas id="fxCanvas"></canvas>
+  <canvas id="uiCanvas"></canvas>
+
+  <!-- 顶部标题 -->
+  <header class="title-bar">
+    <h1>焰<span>·</span>火</h1>
+    <p class="subtitle">烟花模拟器 · Fireworks Simulator</p>
+  </header>
+
+  <!-- 控制面板 -->
+  <aside class="panel" id="panel">
+    <button class="panel-toggle" id="panelToggle" title="收起/展开面板">☰</button>
+    <div class="panel-inner">
+
+      <section class="ctrl-group">
+        <h2>模式</h2>
+        <div class="seg" id="modeSeg">
+          <button data-mode="manual" class="active">手动燃放</button>
+          <button data-mode="layout">布局编排</button>
+          <button data-mode="auto">自动表演</button>
+        </div>
+        <p class="hint" id="modeHint">点击夜空任意位置发射烟花</p>
+      </section>
+
+      <section class="ctrl-group">
+        <h2>烟花类型 <button class="link-btn" id="principleBtn">⚗ 发色与成形原理</button></h2>
+        <div class="type-grid" id="typeGrid"></div>
+        <p class="type-desc" id="typeDesc"></p>
+      </section>
+
+      <section class="ctrl-group">
+        <h2>色彩</h2>
+        <div class="palette-row" id="paletteRow"></div>
+      </section>
+
+      <section class="ctrl-group">
+        <h2>规格</h2>
+        <div class="slider-row">
+          <label>弹径</label>
+          <input type="range" id="sizeSlider" min="0.6" max="1.8" step="0.1" value="1.0">
+          <span id="sizeVal">4 寸</span>
+        </div>
+        <div class="slider-row">
+          <label>升空高度</label>
+          <input type="range" id="heightSlider" min="0.3" max="0.9" step="0.05" value="0.65">
+          <span id="heightVal">中高</span>
+        </div>
+      </section>
+
+      <!-- 布局编排面板 -->
+      <section class="ctrl-group layout-only" id="layoutPanel" style="display:none">
+        <h2>炮位编排</h2>
+        <p class="hint">在地面附近点击放置炮位，当前类型与色彩会被记录到该炮位。</p>
+        <div class="layout-presets">
+          <button id="presetFan">扇形齐射</button>
+          <button id="presetWave">波浪列阵</button>
+          <button id="presetCenter">中心千轮</button>
+        </div>
+        <div class="slider-row">
+          <label>间隔</label>
+          <input type="range" id="seqDelay" min="80" max="1200" step="20" value="260">
+          <span id="seqDelayVal">260ms</span>
+        </div>
+        <div class="layout-actions">
+          <button class="primary" id="fireAll">⚡ 齐射</button>
+          <button class="primary" id="fireSeq">▶ 顺序播放</button>
+          <button id="clearLayout">✕ 清空</button>
+        </div>
+        <p class="hint" id="layoutCount">已布置 0 个炮位</p>
+      </section>
+
+      <section class="ctrl-group row-between">
+        <label class="switch-row"><input type="checkbox" id="soundToggle" checked> 音效</label>
+        <label class="switch-row"><input type="checkbox" id="flashToggle" checked> 空间光照</label>
+      </section>
+
+    </div>
+  </aside>
+
+  <!-- 原理弹窗 -->
+  <div class="modal-mask" id="principleModal" style="display:none">
+    <div class="modal">
+      <button class="modal-close" id="principleClose">✕</button>
+      <h2>烟花的原理</h2>
+      <div class="modal-body">
+        <div class="shell-diagram">
+          <svg viewBox="0 0 300 340" width="100%" aria-label="烟花弹剖面图">
+            <!-- 壳体 -->
+            <circle cx="150" cy="120" r="92" fill="#2a1e12" stroke="#c8a25a" stroke-width="3"/>
+            <circle cx="150" cy="120" r="80" fill="#1b140c" stroke="#7a6134" stroke-width="1.5" stroke-dasharray="4 4"/>
+            <!-- 开包药 -->
+            <circle cx="150" cy="120" r="26" fill="#5c4013"/>
+            <text x="150" y="124" text-anchor="middle" fill="#f5d489" font-size="11">开包药</text>
+            <!-- 效果药珠（星） -->
+            <g fill="#ff5b5b">
+              <circle cx="150" cy="52" r="7"/><circle cx="184" cy="61" r="7"/><circle cx="210" cy="86" r="7"/>
+              <circle cx="219" cy="120" r="7"/><circle cx="210" cy="154" r="7"/><circle cx="184" cy="179" r="7"/>
+              <circle cx="150" cy="188" r="7"/><circle cx="116" cy="179" r="7"/><circle cx="90" cy="154" r="7"/>
+              <circle cx="81" cy="120" r="7"/><circle cx="90" cy="86" r="7"/><circle cx="116" cy="61" r="7"/>
+            </g>
+            <g fill="#5bb8ff">
+              <circle cx="150" cy="76" r="6"/><circle cx="188" cy="98" r="6"/><circle cx="188" cy="142" r="6"/>
+              <circle cx="150" cy="164" r="6"/><circle cx="112" cy="142" r="6"/><circle cx="112" cy="98" r="6"/>
+            </g>
+            <!-- 引信 -->
+            <path d="M150 212 L150 252" stroke="#c8a25a" stroke-width="5"/>
+            <text x="163" y="238" fill="#e8cf9a" font-size="11">延时引信</text>
+            <!-- 发射药 -->
+            <rect x="118" y="252" width="64" height="46" rx="6" fill="#3d2c14" stroke="#c8a25a" stroke-width="2"/>
+            <text x="150" y="280" text-anchor="middle" fill="#f5d489" font-size="11">发射药</text>
+            <path d="M150 298 L150 322" stroke="#c8a25a" stroke-width="3"/>
+            <text x="163" y="316" fill="#e8cf9a" font-size="11">点火引线</text>
+            <text x="150" y="24" text-anchor="middle" fill="#f0dcae" font-size="13">烟花弹剖面 · 药珠的排列决定爆炸形状</text>
+          </svg>
+        </div>
+        <div class="principle-text">
+          <h3>① 升空 —— 发射药</h3>
+          <p>底部发射药（黑火药）在炮筒内爆燃，将烟花弹以约 100 m/s 推向 100–300 米高空。</p>
+          <h3>② 定时 —— 延时引信</h3>
+          <p>发射瞬间点燃延时引信，燃烧数秒后恰在最高点引爆弹体，这就是烟花总在"顶点"绽放的原因。</p>
+          <h3>③ 成形 —— 药珠排列</h3>
+          <p>弹壳内的"效果药珠"（星）如何排列，爆炸后就呈现什么形状：球面排列成牡丹，心形排列就是爱心，双层排列即双层芯。开包药从中心均匀爆开，把每颗星以相同速度推出。</p>
+          <h3>④ 发色 —— 金属焰色反应</h3>
+          <div class="chem-table">
+            <span style="--c:#ff4444">锶 Sr · 红</span>
+            <span style="--c:#44dd66">钡 Ba · 绿</span>
+            <span style="--c:#4488ff">铜 Cu · 蓝</span>
+            <span style="--c:#ffcc33">钠 Na · 黄</span>
+            <span style="--c:#ffffff">镁/铝 · 白光</span>
+            <span style="--c:#cc66ff">锶+铜 · 紫</span>
+            <span style="--c:#ffb347">木炭 · 金橙</span>
+            <span style="--c:#7ff7e0">钛 Ti · 银闪</span>
+          </div>
+          <h3>⑤ 效果 —— 药剂配方</h3>
+          <p>加入钛/铝屑产生"闪烁"，慢燃木炭配方形成"垂柳"长尾，药珠里再嵌小药珠则产生二次爆裂的"十字破"。</p>
+          <p class="cur-type-principle" id="curTypePrinciple"></p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <footer class="foot-hint" id="footHint">🖱 点击夜空燃放 · 空格键快速发射</footer>
+
+  <script src="js/audio.js"></script>
+  <script src="js/fireworks.js"></script>
+  <script src="js/main.js"></script>
+</body>
+</html>
