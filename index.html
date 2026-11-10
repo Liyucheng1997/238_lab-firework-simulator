@@ -4,17 +4,17 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>焰火 · 烟花模拟器</title>
-<link rel="stylesheet" href="css/style.css">
+<link rel="stylesheet" href="css/style.css?v=2.0.0">
 </head>
 <body>
-  <canvas id="bgCanvas"></canvas>
-  <canvas id="fxCanvas"></canvas>
+  <canvas id="glCanvas"></canvas>
   <canvas id="uiCanvas"></canvas>
+  <div class="gl-error" id="glError" style="display:none">当前浏览器不支持 WebGL2，无法运行 3D 烟花模拟器。<br>请使用新版 Chrome / Edge / Firefox，并确认已开启硬件加速。</div>
 
   <!-- 顶部标题 -->
   <header class="title-bar">
     <h1>焰<span>·</span>火</h1>
-    <p class="subtitle">烟花模拟器 · Fireworks Simulator</p>
+    <p class="subtitle">3D 烟花模拟器 · Fireworks Simulator</p>
   </header>
 
   <!-- 控制面板 -->
@@ -29,7 +29,7 @@
           <button data-mode="layout">布局编排</button>
           <button data-mode="auto">自动表演</button>
         </div>
-        <p class="hint" id="modeHint">点击夜空任意位置发射烟花</p>
+        <p class="hint" id="modeHint"></p>
       </section>
 
       <section class="ctrl-group">
@@ -39,7 +39,7 @@
       </section>
 
       <section class="ctrl-group">
-        <h2>色彩</h2>
+        <h2>色彩 <span class="h2-note" id="paletteName">锶红金</span></h2>
         <div class="palette-row" id="paletteRow"></div>
       </section>
 
@@ -47,24 +47,26 @@
         <h2>规格</h2>
         <div class="slider-row">
           <label>弹径</label>
-          <input type="range" id="sizeSlider" min="0.6" max="1.8" step="0.1" value="1.0">
-          <span id="sizeVal">4 寸</span>
+          <input type="range" id="sizeSlider" min="0" max="6" step="1" value="3">
+          <span id="sizeVal">6 寸</span>
         </div>
         <div class="slider-row">
-          <label>升空高度</label>
-          <input type="range" id="heightSlider" min="0.3" max="0.9" step="0.05" value="0.65">
-          <span id="heightVal">中高</span>
+          <label>炸高</label>
+          <input type="range" id="heightSlider" min="0.7" max="1.3" step="0.05" value="1">
+          <span id="heightVal"></span>
         </div>
+        <p class="hint" id="specHint"></p>
       </section>
 
       <!-- 布局编排面板 -->
       <section class="ctrl-group layout-only" id="layoutPanel" style="display:none">
         <h2>炮位编排</h2>
-        <p class="hint">在地面附近点击放置炮位，当前类型与色彩会被记录到该炮位。</p>
+        <p class="hint">点击水面放置炮位，当前类型、色彩与弹径会被记录到该炮位。</p>
         <div class="layout-presets">
           <button id="presetFan">扇形齐射</button>
           <button id="presetWave">波浪列阵</button>
           <button id="presetCenter">中心千轮</button>
+          <button id="presetCross">彗星对射</button>
         </div>
         <div class="slider-row">
           <label>间隔</label>
@@ -79,9 +81,63 @@
         <p class="hint" id="layoutCount">已布置 0 个炮位</p>
       </section>
 
-      <section class="ctrl-group row-between">
+      <section class="ctrl-group">
+        <h2>镜头</h2>
+        <div class="btn-grid" id="camRow"></div>
+        <label class="switch-row" style="margin-top:10px"><input type="checkbox" id="orbitToggle"> 环绕巡航（R）</label>
+      </section>
+
+      <section class="ctrl-group">
+        <h2>时间</h2>
+        <div class="slider-row">
+          <label>流速</label>
+          <input type="range" id="speedSlider" min="0.05" max="1.5" step="0.05" value="1">
+          <span id="speedVal">1.00×</span>
+        </div>
+        <button class="wide-btn" id="freezeBtn">❄ 冻结时间</button>
+        <p class="hint">冻结后拖拽视角，可以绕着定格的烟花看它的立体结构。</p>
+      </section>
+
+      <section class="ctrl-group">
+        <h2>环境</h2>
+        <div class="slider-row">
+          <label>风速</label>
+          <input type="range" id="windSlider" min="0" max="12" step="0.2" value="2.4">
+          <span id="windVal">2.4 m/s</span>
+        </div>
+        <div class="slider-row">
+          <label>风向</label>
+          <input type="range" id="windDirSlider" min="0" max="360" step="4" value="68">
+          <span id="windDirVal">68°</span>
+        </div>
+      </section>
+
+      <section class="ctrl-group">
+        <h2>画质</h2>
+        <div class="seg" id="qualitySeg">
+          <button data-q="low">低</button>
+          <button data-q="medium">中</button>
+          <button data-q="high" class="active">高</button>
+          <button data-q="ultra">极致</button>
+        </div>
+        <div class="slider-row" style="margin-top:12px">
+          <label>辉光</label>
+          <input type="range" id="bloomSlider" min="0" max="2.5" step="0.1" value="1">
+          <span id="bloomVal">1.0</span>
+        </div>
+        <div class="slider-row">
+          <label>曝光</label>
+          <input type="range" id="expSlider" min="0.4" max="2.5" step="0.1" value="1">
+          <span id="expVal">1.0</span>
+        </div>
+      </section>
+
+      <section class="ctrl-group toggle-grid">
         <label class="switch-row"><input type="checkbox" id="soundToggle" checked> 音效</label>
+        <label class="switch-row"><input type="checkbox" id="delayToggle" checked> 声速延迟</label>
         <label class="switch-row"><input type="checkbox" id="flashToggle" checked> 空间光照</label>
+        <label class="switch-row"><input type="checkbox" id="reflToggle" checked> 水面倒影</label>
+        <label class="switch-row"><input type="checkbox" id="smokeToggle" checked> 硝烟</label>
       </section>
 
     </div>
@@ -125,9 +181,9 @@
         </div>
         <div class="principle-text">
           <h3>① 升空 —— 发射药</h3>
-          <p>底部发射药（黑火药）在炮筒内爆燃，将烟花弹以约 100 m/s 推向 100–300 米高空。</p>
+          <p>底部发射药（黑火药）在炮筒内爆燃，把礼花弹以 60–110 m/s 的速度推出。弹体在重力和空气阻力（与速度平方成正比）作用下减速：3 寸弹约升到 100 米，12 寸弹可达 330 米。</p>
           <h3>② 定时 —— 延时引信</h3>
-          <p>发射瞬间点燃延时引信，燃烧数秒后恰在最高点引爆弹体，这就是烟花总在"顶点"绽放的原因。</p>
+          <p>出膛瞬间点燃延时引信，其长度按弹道精确裁定——3 寸弹约 4 秒，12 寸弹约 7.5 秒——恰好在弹道顶点引爆，这就是烟花总在"最高处"绽放的原因。</p>
           <h3>③ 成形 —— 药珠排列</h3>
           <p>弹壳内的"效果药珠"（星）如何排列，爆炸后就呈现什么形状：球面排列成牡丹，心形排列就是爱心，双层排列即双层芯。开包药从中心均匀爆开，把每颗星以相同速度推出。</p>
           <h3>④ 发色 —— 金属焰色反应</h3>
@@ -142,17 +198,24 @@
             <span style="--c:#7ff7e0">钛 Ti · 银闪</span>
           </div>
           <h3>⑤ 效果 —— 药剂配方</h3>
-          <p>加入钛/铝屑产生"闪烁"，慢燃木炭配方形成"垂柳"长尾，药珠里再嵌小药珠则产生二次爆裂的"十字破"。</p>
+          <p>金属盐决定焰色；木炭与铁屑不靠焰色反应，而是像烧红的铁一样按温度发光（黑体辐射），从亮黄冷却到暗红，这就是金色拖尾。加入钛/铝屑产生白色闪光，慢燃配方形成"垂柳"长尾，药珠里再嵌爆药则产生二次爆裂。</p>
           <p class="cur-type-principle" id="curTypePrinciple"></p>
         </div>
       </div>
     </div>
   </div>
 
-  <footer class="foot-hint" id="footHint">🖱 点击夜空燃放 · 空格键快速发射</footer>
+  <div class="hud" id="hud"><div id="hudShell"></div><div id="hudStat"></div></div>
+  <footer class="foot-hint" id="footHint"></footer>
 
-  <script src="js/audio.js"></script>
-  <script src="js/fireworks.js"></script>
-  <script src="js/main.js"></script>
+  <script src="js/core.js?v=2.0.0"></script>
+  <script src="js/shaders.js?v=2.0.0"></script>
+  <script src="js/audio.js?v=2.0.0"></script>
+  <script src="js/sim.js?v=2.0.0"></script>
+  <script src="js/shells.js?v=2.0.0"></script>
+  <script src="js/camera.js?v=2.0.0"></script>
+  <script src="js/renderer.js?v=2.0.0"></script>
+  <script src="js/show.js?v=2.0.0"></script>
+  <script src="js/main.js?v=2.0.0"></script>
 </body>
 </html>

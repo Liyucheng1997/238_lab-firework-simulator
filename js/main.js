@@ -1,430 +1,454 @@
-/* ============ 主程序：渲染循环 / 夜景背景 / 模式与交互 ============ */
+/* ============ 主程序：主循环 / 输入 / 模式 / 界面绑定 ============ */
+'use strict';
+
 (() => {
-  const bgCanvas = document.getElementById('bgCanvas');
-  const fxCanvas = document.getElementById('fxCanvas');
-  const uiCanvas = document.getElementById('uiCanvas');
-  const bg = bgCanvas.getContext('2d');
-  const fx = fxCanvas.getContext('2d');
-  const ui = uiCanvas.getContext('2d');
+  const $ = id => document.getElementById(id);
+  const { clamp, rand } = FW;
+  const glCanvas = $('glCanvas'), uiCanvas = $('uiCanvas'), ui = uiCanvas.getContext('2d');
 
-  let W = 0, H = 0, DPR = 1;
-  let groundY = 0;
+  let renderer;
+  try { renderer = new FW.Renderer(glCanvas); }
+  catch (e) { console.error(e); $('glError').style.display = ''; return; }
 
-  /* ---------- 状态 ---------- */
+  /* ---------- 画质档位 ---------- */
+  const QUALITY = {
+    low: { cap: 140000, density: 0.6, emit: 0.5, dpr: 1 },
+    medium: { cap: 320000, density: 0.85, emit: 0.8, dpr: 1.25 },
+    high: { cap: 640000, density: 1, emit: 1, dpr: 1.5 },
+    ultra: { cap: 1300000, density: 1.3, emit: 1.5, dpr: 2 },
+  };
+
   const state = {
-    mode: 'manual',                  // manual | layout | auto
+    mode: 'manual',            // manual | layout | auto
     typeId: 'peony',
-    palette: PALETTES[0],
-    power: 1.0,
-    heightRatio: 0.65,
-    flash: true,
-    launchers: [],                   // 布局模式的炮位 [{x, typeId, palette, power}]
-    seqTimer: null,
-    autoTimer: 0,
+    palette: FW.PALETTES[0],
+    calIdx: 3,                 // 6 寸
+    heightMul: 1,
+    timeScale: 1,
+    frozen: false,
+    quality: 'high',
+    mortars: [],               // 布局模式的炮位 [{x, z, typeId, palette, caliber, tiltX}]
+    windSpeed: 2.4, windDir: 68,
+  };
+  const caliber = () => FW.CALIBERS[state.calIdx];
+
+  const sim = new FW.Sim({ sparkCap: QUALITY.high.cap });
+  const cam = new FW.Camera();
+  const show = new FW.Show(sim);
+
+  sim.onEvent = (name, d) => {
+    if (name === 'lift') SFX.lift(d, d.cal);
+    else if (name === 'burst') { SFX.burst(d, d.cal, d.type.boom || 1); hudBurst(); }
+    else if (name === 'pop') SFX.pop(d);
+    else if (name === 'crackle') SFX.crackle(d, d.n);
+    else if (name === 'fountain') SFX.fountain(d);
   };
 
-  /* ---------- 粒子系统 ---------- */
-  const sys = {
-    particles: [],
-    rockets: [],
-    flashes: [],
-    spawn(p) { if (this.particles.length < 6000) this.particles.push(p); },
-    explode(typeId, x, y, palette, power) {
-      (EXPLODERS[typeId] || EXPLODERS.peony)(this, x, y, palette, power);
-      if (state.flash) this.flashes.push({ x, y, r: 260 * power, a: 0.55 * power, life: 1 });
-      SFX.boom(power, Math.abs(x - W / 2) / W);
-      if (typeId === 'chrys' || typeId === 'kamuro' || typeId === 'palm') SFX.crackle(14, 1.2);
-      if (typeId === 'crossette') setTimeout(() => SFX.crackle(8, 0.5), 500);
-      if (typeId === 'strobe') SFX.crackle(20, 1.6);
-    },
-    launch(x, targetY, opts = {}) {
-      const type = opts.typeId || state.typeId;
-      this.rockets.push(new Rocket({
-        x, y: groundY,
-        tx: opts.tx, targetY,
-        type,
-        palette: opts.palette || state.palette,
-        power: opts.power || state.power,
-      }));
-      SFX.launch();
-    },
-  };
-
-  /* ---------- 尺寸 ---------- */
-  function resize() {
-    DPR = Math.min(window.devicePixelRatio || 1, 2);
-    W = window.innerWidth; H = window.innerHeight;
-    for (const c of [bgCanvas, fxCanvas, uiCanvas]) {
-      c.width = W * DPR; c.height = H * DPR;
-      c.style.width = W + 'px'; c.style.height = H + 'px';
-      c.getContext('2d').setTransform(DPR, 0, 0, DPR, 0, 0);
-    }
-    groundY = H - 40;
-    buildStars();
-    buildSkyline();
+  function applyWind() {
+    const a = (state.windDir * Math.PI) / 180;
+    sim.wind.x = Math.sin(a) * state.windSpeed; sim.wind.z = Math.cos(a) * state.windSpeed;
   }
-
-  /* ---------- 夜景背景：星空 / 月亮 / 城市剪影 ---------- */
-  let stars = [], skyline = [];
-  function buildStars() {
-    stars = [];
-    const n = Math.round((W * H) / 6500);
-    for (let i = 0; i < n; i++) {
-      stars.push({
-        x: Math.random() * W, y: Math.random() * H * 0.75,
-        r: Math.random() * 1.1 + 0.2,
-        ph: Math.random() * Math.PI * 2,
-        sp: 0.5 + Math.random() * 1.5,
-      });
-    }
+  function applyQuality(id) {
+    const q = QUALITY[id];
+    state.quality = id;
+    if (Math.abs(sim.ring.cap - q.cap) > 4096) sim.setRing(q.cap);     // 换档会清空现有火星
+    sim.density = q.density; sim.emitBase = q.emit; sim.emitAdapt = 1;
+    renderer.dprCap = q.dpr;
   }
-  function buildSkyline() {
-    skyline = [];
-    let x = -20;
-    while (x < W + 40) {
-      const w = 30 + Math.random() * 70;
-      const h = 30 + Math.random() * 110;
-      const windows = [];
-      const cols = Math.floor(w / 13), rows = Math.floor(h / 16);
-      for (let c = 0; c < cols; c++)
-        for (let r = 0; r < rows; r++)
-          if (Math.random() < 0.22) windows.push([c * 13 + 5, r * 16 + 8]);
-      skyline.push({ x, w, h, windows });
-      x += w + Math.random() * 14;
-    }
+  applyWind(); applyQuality('high');
+
+  /* ---------- 发射 ---------- */
+  /** 朝空间中一点发射：从驳船上最近的炮位出膛，弹道顶点落在该点 */
+  function fireAt(P, o = {}) {
+    sim.launch({
+      x: clamp(P[0] * 0.75, -115, 115), z: clamp(P[2] * 0.3, -4.5, 4.5),
+      typeId: o.typeId || state.typeId, palette: o.palette || state.palette, caliber: o.caliber || caliber(), target: P,
+    });
   }
-
-  function drawBackground(t) {
-    // 夜空渐变
-    const g = bg.createLinearGradient(0, 0, 0, H);
-    g.addColorStop(0, '#040510');
-    g.addColorStop(0.55, '#0a0c1e');
-    g.addColorStop(0.85, '#141228');
-    g.addColorStop(1, '#1c1430');
-    bg.fillStyle = g;
-    bg.fillRect(0, 0, W, H);
-
-    // 星星
-    for (const s of stars) {
-      const tw = 0.35 + 0.65 * (0.5 + 0.5 * Math.sin(s.ph + t * 0.02 * s.sp));
-      bg.fillStyle = `rgba(255,252,240,${0.75 * tw})`;
-      bg.beginPath();
-      bg.arc(s.x, s.y, s.r, 0, Math.PI * 2);
-      bg.fill();
-    }
-
-    // 月亮
-    const mx = W * 0.82, my = H * 0.16;
-    const mg = bg.createRadialGradient(mx, my, 8, mx, my, 90);
-    mg.addColorStop(0, 'rgba(255,250,224,0.9)');
-    mg.addColorStop(0.25, 'rgba(255,248,214,0.25)');
-    mg.addColorStop(1, 'rgba(255,248,214,0)');
-    bg.fillStyle = mg;
-    bg.beginPath(); bg.arc(mx, my, 90, 0, Math.PI * 2); bg.fill();
-    bg.fillStyle = '#f7ecc8';
-    bg.beginPath(); bg.arc(mx, my, 26, 0, Math.PI * 2); bg.fill();
-    bg.fillStyle = 'rgba(210,196,160,0.5)';
-    bg.beginPath(); bg.arc(mx - 8, my - 5, 5, 0, Math.PI * 2); bg.fill();
-    bg.beginPath(); bg.arc(mx + 7, my + 8, 3.5, 0, Math.PI * 2); bg.fill();
-
-    // 城市剪影
-    bg.fillStyle = '#07070f';
-    for (const b of skyline) bg.fillRect(b.x, groundY - b.h + 40, b.w, b.h);
-    bg.fillStyle = 'rgba(255,214,120,0.55)';
-    for (const b of skyline)
-      for (const [wx, wy] of b.windows)
-        bg.fillRect(b.x + wx, groundY - b.h + 40 + wy, 4, 6);
-
-    // 地面
-    bg.fillStyle = '#050508';
-    bg.fillRect(0, groundY + 40 - 40, W, 40);
+  function fireRandom() {
+    const h = FW.stdHeight(caliber()) * state.heightMul;
+    fireAt([rand(-110, 110), h * rand(0.9, 1.1), rand(-25, 25)]);
   }
-
-  /* ---------- UI 层：炮位标记 ---------- */
-  function drawUI(t) {
-    ui.clearRect(0, 0, W, H);
-    if (state.mode !== 'layout') return;
-    // 地面基准线
-    ui.strokeStyle = 'rgba(232,196,118,0.35)';
-    ui.setLineDash([6, 8]);
-    ui.beginPath();
-    ui.moveTo(0, groundY); ui.lineTo(W, groundY);
-    ui.stroke();
-    ui.setLineDash([]);
-    state.launchers.forEach((L, i) => {
-      const pulse = 0.6 + 0.4 * Math.sin(t * 0.1 + i);
-      const type = FIREWORK_TYPES.find(tp => tp.id === L.typeId);
-      // 炮筒
-      ui.fillStyle = `rgba(232,196,118,${0.85 * pulse})`;
-      ui.fillRect(L.x - 4, groundY - 16, 8, 16);
-      ui.strokeStyle = `rgba(232,196,118,${0.5 * pulse})`;
-      ui.beginPath(); ui.arc(L.x, groundY - 20, 9, 0, Math.PI * 2); ui.stroke();
-      // 类型图标与序号
-      ui.fillStyle = '#e9e4d8';
-      ui.font = '13px serif';
-      ui.textAlign = 'center';
-      ui.fillText(type ? type.icon : '❀', L.x, groundY - 26);
-      ui.fillStyle = 'rgba(233,228,216,0.6)';
-      ui.font = '10px sans-serif';
-      ui.fillText(String(i + 1), L.x, groundY + 14);
+  function fireMortar(m) {
+    sim.launch({
+      x: m.x, z: m.z, typeId: m.typeId, palette: m.palette, caliber: m.caliber,
+      height: FW.stdHeight(m.caliber) * state.heightMul * rand(0.97, 1.03), tiltX: m.tiltX || 0,
     });
   }
 
-  /* ---------- 主循环 ---------- */
-  let frame = 0;
-  function step() {
-    frame++;
-    // 窗口尺寸变化（或初始为 0）时自动重建画布
-    if (W !== window.innerWidth || H !== window.innerHeight) resize();
-    if (W === 0 || H === 0) return;
-    drawBackground(frame);
-
-    // 粒子层拖尾衰减
-    fx.globalCompositeOperation = 'destination-out';
-    fx.fillStyle = 'rgba(0,0,0,0.16)';
-    fx.fillRect(0, 0, W, H);
-    fx.globalCompositeOperation = 'lighter';
-    fx.lineCap = 'round';
-
-    // 爆炸闪光（空间光照）
-    for (let i = sys.flashes.length - 1; i >= 0; i--) {
-      const f = sys.flashes[i];
-      f.life -= 0.12;
-      if (f.life <= 0) { sys.flashes.splice(i, 1); continue; }
-      const rg = fx.createRadialGradient(f.x, f.y, 0, f.x, f.y, f.r * (1.4 - f.life * 0.4));
-      rg.addColorStop(0, `rgba(255,246,220,${f.a * f.life * 0.5})`);
-      rg.addColorStop(1, 'rgba(255,246,220,0)');
-      fx.fillStyle = rg;
-      fx.beginPath();
-      fx.arc(f.x, f.y, f.r * 1.4, 0, Math.PI * 2);
-      fx.fill();
-    }
-
-    // 火箭
-    for (let i = sys.rockets.length - 1; i >= 0; i--) {
-      const r = sys.rockets[i];
-      r.update(sys);
-      if (r.exploded) { sys.rockets.splice(i, 1); continue; }
-      r.draw(fx);
-    }
-
-    // 粒子
-    for (let i = sys.particles.length - 1; i >= 0; i--) {
-      const p = sys.particles[i];
-      p.update(sys, frame);
-      if (p.life <= 0 || p.y > groundY + 20) { sys.particles.splice(i, 1); continue; }
-      p.draw(fx, frame);
-    }
-
-    // 自动表演
-    if (state.mode === 'auto' && --state.autoTimer <= 0) {
-      state.autoTimer = 30 + Math.random() * 70;
-      const x = W * (0.12 + Math.random() * 0.76);
-      const type = FIREWORK_TYPES[Math.floor(Math.random() * FIREWORK_TYPES.length)];
-      const pal = PALETTES[Math.floor(Math.random() * (PALETTES.length - 1))];
-      const power = 0.7 + Math.random() * 0.9;
-      sys.launch(x, H * (0.12 + Math.random() * 0.35), { typeId: type.id, palette: pal, power });
-      // 偶发齐射
-      if (Math.random() < 0.15) {
-        for (let k = 0; k < 3; k++) {
-          setTimeout(() => sys.launch(W * (0.15 + Math.random() * 0.7), H * (0.15 + Math.random() * 0.3),
-            { typeId: type.id, palette: pal, power: power * 0.85 }), k * 120);
-        }
+  /** 把一次点击换算成空中的目标点 */
+  function skyPoint(r) {
+    let p = null;
+    let nx = cam.pos[0] - cam.target[0], nz = cam.pos[2] - cam.target[2];
+    const l = Math.hypot(nx, nz);
+    if (l > cam.dist * 0.4) {
+      // 过发射线、正对镜头的竖直平面
+      nx /= l; nz /= l;
+      const den = r.d[0] * nx + r.d[2] * nz;
+      if (den < -1e-3) {
+        const t = -(r.o[0] * nx + r.o[2] * nz) / den;
+        p = [r.o[0] + r.d[0] * t, r.o[1] + r.d[1] * t, r.o[2] + r.d[2] * t];
       }
+    } else if (r.d[1] < -1e-3) {
+      // 俯视时改用标准炸高处的水平面
+      const h = FW.stdHeight(caliber()) * state.heightMul, t = (h - r.o[1]) / r.d[1];
+      if (t > 0) p = [r.o[0] + r.d[0] * t, h, r.o[2] + r.d[2] * t];
     }
-
-    drawUI(frame);
+    if (!p) p = [rand(-80, 80), FW.stdHeight(caliber()), rand(-20, 20)];
+    p[1] = clamp(p[1], 35, 460);
+    const hr = Math.hypot(p[0], p[2]);
+    if (hr > 330) { p[0] *= 330 / hr; p[2] *= 330 / hr; }
+    return p;
   }
 
-  function loop() {
-    step();
-    requestAnimationFrame(loop);
+  /* ---------- 尺寸 ---------- */
+  let W = 0, H = 0, DPR = 1;
+  function resize() {
+    W = window.innerWidth; H = window.innerHeight;
+    DPR = Math.min(window.devicePixelRatio || 1, 2);
+    uiCanvas.width = W * DPR; uiCanvas.height = H * DPR;
+    uiCanvas.style.width = W + 'px'; uiCanvas.style.height = H + 'px';
+    ui.setTransform(DPR, 0, 0, DPR, 0, 0);
+  }
+
+  /* ---------- 二维叠加层：炮位标记 ---------- */
+  function drawOverlay(t) {
+    ui.clearRect(0, 0, W, H);
+    if (state.mode !== 'layout') return;
+    ui.textAlign = 'center';
+    const labels = [];
+    state.mortars.forEach((m, i) => {
+      const s = cam.project(m.x, 2, m.z, W, H);
+      if (!s) return;
+      const crowded = labels.some(q => Math.abs(q[0] - s[0]) < 30 && Math.abs(q[1] - s[1]) < 14);
+      if (!crowded) labels.push(s);
+      const pulse = 0.6 + 0.4 * Math.sin(t * 4 + i);
+      const type = FW.TYPE_MAP[m.typeId];
+      ui.strokeStyle = `rgba(232,196,118,${0.75 * pulse})`;
+      ui.lineWidth = 1.2;
+      ui.beginPath(); ui.arc(s[0], s[1] - 4, 9, 0, Math.PI * 2); ui.stroke();
+      if (m.tiltX) {       // 倾斜炮位画出指向
+        ui.beginPath(); ui.moveTo(s[0], s[1] - 4);
+        ui.lineTo(s[0] + Math.sin(m.tiltX) * 26 * Math.cos(cam.yaw), s[1] - 4 - Math.cos(m.tiltX) * 26); ui.stroke();
+      }
+      if (crowded) return;       // 炮位挤在一起时只标注其中一个
+      ui.fillStyle = '#f3ead6'; ui.font = '13px serif';
+      ui.fillText(type ? type.icon : '❀', s[0], s[1] - 18);
+      ui.fillStyle = 'rgba(233,228,216,0.7)'; ui.font = '10px sans-serif';
+      ui.fillText(`${i + 1} · ${m.caliber}寸`, s[0], s[1] + 18);
+    });
+  }
+
+  /* ---------- HUD ---------- */
+  const hudStat = $('hudStat'), hudShell = $('hudShell');
+  function hudBurst() {
+    const b = sim.lastBurst;
+    if (!b) return;
+    hudShell.textContent = `${b.cal} 寸 ${b.type.name} · 炸高 ${b.height.toFixed(0)} m · 开花直径 ${(b.radius * 2).toFixed(0)} m · 出膛 ${b.v0.toFixed(0)} m/s · 引信 ${b.fuse.toFixed(1)} s`;
+  }
+
+  /* ---------- 主循环 ---------- */
+  let last = performance.now(), wall = 0, fps = 60, statT = 0, adaptT = 0, slowTicks = 0;
+  function advance(rdt) {
+    if (state.frozen) return;
+    const rem = rdt * state.timeScale;
+    const steps = Math.min(4, Math.max(1, Math.ceil(rem / (1 / 60))));
+    for (let i = 0; i < steps; i++) sim.step(rem / steps);
+  }
+  function frame(now) {
+    requestAnimationFrame(frame);
+    const raw = (now - last) / 1000;
+    const rdt = Math.min(0.05, Math.max(0.001, raw));
+    last = now; wall += rdt;
+    if (W !== window.innerWidth || H !== window.innerHeight) resize();
+    if (!W || !H) return;
+    renderer.resize(W, H);
+    advance(rdt);
+    cam.shiftGoal = document.body.classList.contains('ui-hidden') || $('panel').classList.contains('collapsed') ? 0 : Math.min(0.3, 292 / W);
+    cam.update(rdt, W / H);
+    sim.viewer = cam.pos;
+    SFX.setListener(cam.pos, [cam.view[0], cam.view[4], cam.view[8]]);
+    renderer.render(sim, cam, wall, state.frozen ? 0 : state.timeScale);
+    drawOverlay(wall);
+
+    statT += rdt;
+    if (raw < 0.1) {            // 标签页被挂起/节流时的长间隔不计入帧率
+      fps += (1 / rdt - fps) * 0.05;
+      adaptT += rdt;
+    }
+    if (adaptT > 0.5) {
+      // 帧率不足时，自动降低拖尾火星的发射率（并以亮度补偿）；
+      // 仍然不够再逐级降低渲染分辨率
+      adaptT = 0;
+      if (fps < 42) sim.emitAdapt = Math.max(0.3, sim.emitAdapt * 0.85);
+      else if (fps > 54) sim.emitAdapt = Math.min(1, sim.emitAdapt * 1.08);
+      slowTicks = fps < 33 ? slowTicks + 1 : 0;
+      if (slowTicks >= 6 && renderer.dprCap > 0.75) { renderer.dprCap -= 0.25; slowTicks = 0; }
+    }
+    if (statT > 0.3) {
+      statT = 0;
+      hudStat.textContent = `${fps.toFixed(0)} FPS · 星体 ${sim.n} · 火星 ${(sim.ring.live / 1000).toFixed(0)}k${state.frozen ? ' · 时间已冻结' : state.timeScale !== 1 ? ` · ${state.timeScale.toFixed(2)}×` : ''}`;
+    }
   }
 
   // 调试接口（无头验证用）
-  window.__fw = { sys, state, step, get frame() { return frame; } };
+  window.__fw = { sim, cam, renderer, state, show, fireAt, step(dt = 1 / 60, n = 1) { for (let i = 0; i < n; i++) sim.step(dt); } };
 
-  /* ==================== UI 交互 ==================== */
-  const $ = id => document.getElementById(id);
-
-  // 类型网格
-  const typeGrid = $('typeGrid'), typeDesc = $('typeDesc');
-  FIREWORK_TYPES.forEach(t => {
-    const card = document.createElement('div');
-    card.className = 'type-card' + (t.id === state.typeId ? ' active' : '');
-    card.innerHTML = `<span class="icon">${t.icon}</span><span class="name">${t.name}</span>`;
-    card.onclick = () => {
-      state.typeId = t.id;
-      typeGrid.querySelectorAll('.type-card').forEach(c => c.classList.remove('active'));
-      card.classList.add('active');
-      typeDesc.textContent = t.desc;
-      $('curTypePrinciple').textContent = `【${t.name}】${t.principle}`;
-      // 手动模式下即时预览
-      if (state.mode === 'manual') sys.launch(W / 2 + (Math.random() - 0.5) * W * 0.3, H * 0.3);
-    };
-    typeGrid.appendChild(card);
+  /* ==================== 画布输入 ==================== */
+  const ptrs = new Map();
+  let drag = null, pinch = 0;
+  uiCanvas.addEventListener('pointerdown', e => {
+    SFX.unlock();
+    uiCanvas.setPointerCapture(e.pointerId);
+    ptrs.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (ptrs.size === 1) drag = { id: e.pointerId, sx: e.clientX, sy: e.clientY, lx: e.clientX, ly: e.clientY, moved: false, button: e.button, shift: e.shiftKey };
+    else if (ptrs.size === 2) {
+      if (drag) drag.moved = true;
+      const [a, b] = [...ptrs.values()];
+      pinch = Math.hypot(a.x - b.x, a.y - b.y);
+    }
   });
-  typeDesc.textContent = FIREWORK_TYPES[0].desc;
-  $('curTypePrinciple').textContent = `【${FIREWORK_TYPES[0].name}】${FIREWORK_TYPES[0].principle}`;
+  uiCanvas.addEventListener('pointermove', e => {
+    const p = ptrs.get(e.pointerId);
+    if (!p) return;
+    p.x = e.clientX; p.y = e.clientY;
+    if (ptrs.size === 2) {
+      const [a, b] = [...ptrs.values()], d = Math.hypot(a.x - b.x, a.y - b.y);
+      if (pinch > 0 && d > 0) cam.zoom(pinch / d);
+      pinch = d;
+      return;
+    }
+    if (!drag || drag.id !== e.pointerId) return;
+    const dx = e.clientX - drag.lx, dy = e.clientY - drag.ly;
+    drag.lx = e.clientX; drag.ly = e.clientY;
+    if (!drag.moved && Math.hypot(e.clientX - drag.sx, e.clientY - drag.sy) > 5) drag.moved = true;
+    if (drag.moved) {
+      if (drag.button === 2 || drag.shift) cam.pan(dx, dy);
+      else cam.orbit(dx, dy);
+      uiCanvas.style.cursor = 'grabbing';
+    }
+  });
+  const pointerEnd = e => {
+    if (!ptrs.has(e.pointerId)) return;
+    ptrs.delete(e.pointerId);
+    if (drag && drag.id === e.pointerId) {
+      if (!drag.moved && e.type === 'pointerup') {
+        if (drag.button === 0) onClick(e.clientX, e.clientY);
+        else if (drag.button === 2) onRightClick(e.clientX, e.clientY);
+      }
+      drag = null;
+      uiCanvas.style.cursor = '';
+    }
+  };
+  uiCanvas.addEventListener('pointerup', pointerEnd);
+  uiCanvas.addEventListener('pointercancel', pointerEnd);
+  uiCanvas.addEventListener('contextmenu', e => e.preventDefault());
+  uiCanvas.addEventListener('wheel', e => { e.preventDefault(); cam.zoom(Math.exp(e.deltaY * 0.0011)); }, { passive: false });
+
+  function onClick(x, y) {
+    const r = cam.ray((x / W) * 2 - 1, 1 - (y / H) * 2);
+    if (state.mode === 'layout' && r.d[1] < -0.005) {
+      const t = -r.o[1] / r.d[1], gx = r.o[0] + r.d[0] * t, gz = r.o[2] + r.d[2] * t;
+      if (Math.hypot(gx, gz) < 420) {
+        state.mortars.push({ x: gx, z: gz, typeId: state.typeId, palette: state.palette, caliber: caliber(), tiltX: 0 });
+        mortarsChanged();
+        return;
+      }
+    }
+    fireAt(skyPoint(r));
+  }
+  function onRightClick(x, y) {
+    if (state.mode !== 'layout' || !state.mortars.length) return;
+    let best = -1, bd = 44;
+    state.mortars.forEach((m, i) => {
+      const s = cam.project(m.x, 2, m.z, W, H);
+      if (!s) return;
+      const d = Math.hypot(s[0] - x, s[1] - y);
+      if (d < bd) { bd = d; best = i; }
+    });
+    if (best >= 0) { state.mortars.splice(best, 1); mortarsChanged(); }
+  }
+  function mortarsChanged() {
+    $('layoutCount').textContent = `已布置 ${state.mortars.length} 个炮位`;
+    renderer.setProps(state.mortars);
+  }
+
+  /* ==================== 界面 ==================== */
+  // 烟花类型
+  const typeGrid = $('typeGrid'), typeDesc = $('typeDesc');
+  function selectType(t, card, preview) {
+    state.typeId = t.id;
+    typeGrid.querySelectorAll('.type-card').forEach(c => c.classList.remove('active'));
+    card.classList.add('active');
+    typeDesc.textContent = t.desc;
+    $('curTypePrinciple').textContent = `【${t.name}】${t.principle}`;
+    if (preview && state.mode === 'manual') {
+      SFX.unlock();
+      fireAt([rand(-60, 60), FW.stdHeight(caliber()) * state.heightMul, rand(-15, 15)]);
+    }
+  }
+  let groundLabel = false;
+  FW.TYPES.forEach((t, i) => {
+    if (t.ground && !groundLabel) {
+      groundLabel = true;
+      const lab = document.createElement('div');
+      lab.className = 'type-sep'; lab.textContent = '地面效果';
+      typeGrid.appendChild(lab);
+    }
+    const card = document.createElement('div');
+    card.className = 'type-card';
+    card.innerHTML = `<span class="icon">${t.icon}</span><span class="name">${t.name}</span>`;
+    card.onclick = () => selectType(t, card, true);
+    typeGrid.appendChild(card);
+    if (i === 0) selectType(t, card, false);
+  });
 
   // 色彩
   const paletteRow = $('paletteRow');
-  PALETTES.forEach((p, i) => {
+  FW.PALETTES.forEach((p, i) => {
     const sw = document.createElement('div');
     sw.className = 'swatch' + (i === 0 ? ' active' : '');
-    sw.style.background = p.css;
-    sw.title = p.name;
-    sw.style.setProperty('--sw', '#fff');
+    sw.style.background = p.css; sw.title = p.name;
     sw.onclick = () => {
       state.palette = p;
       paletteRow.querySelectorAll('.swatch').forEach(s => s.classList.remove('active'));
       sw.classList.add('active');
+      $('paletteName').textContent = p.name;
     };
     paletteRow.appendChild(sw);
   });
 
   // 规格
-  const sizeNames = ['2 寸', '3 寸', '4 寸', '5 寸', '6 寸', '8 寸', '10寸'];
-  $('sizeSlider').oninput = e => {
-    state.power = +e.target.value;
-    const idx = Math.min(sizeNames.length - 1, Math.round((state.power - 0.6) / 1.2 * (sizeNames.length - 1)));
-    $('sizeVal').textContent = sizeNames[idx];
-  };
-  const heightNames = { 0.3: '很高', 0.45: '高', 0.65: '中高', 0.8: '较低', 0.9: '低' };
-  $('heightSlider').oninput = e => {
-    state.heightRatio = +e.target.value;
-    const v = state.heightRatio;
-    $('heightVal').textContent = v < 0.4 ? '很高' : v < 0.55 ? '高' : v < 0.72 ? '中高' : '较低';
-  };
+  function showSpec() {
+    const c = caliber(), h = FW.stdHeight(c) * state.heightMul;
+    $('sizeVal').textContent = `${c} 寸`;
+    $('heightVal').textContent = `${h.toFixed(0)} m`;
+    $('specHint').textContent = `开花直径约 ${(FW.stdRadius(c) * 2).toFixed(0)} m，出膛约 ${FW.verticalShot(FW.shellDrag(c), h).v0.toFixed(0)} m/s，引信 ${sim.fuseFor(c, h).toFixed(1)} s`;
+  }
+  $('sizeSlider').oninput = e => { state.calIdx = +e.target.value; showSpec(); };
+  $('heightSlider').oninput = e => { state.heightMul = +e.target.value; showSpec(); };
+  showSpec();
 
-  // 模式切换
+  // 模式
   const modeHints = {
-    manual: '点击夜空任意位置发射烟花',
-    layout: '在下方地面附近点击布置炮位，然后齐射或顺序播放',
-    auto: '自动随机编排烟花表演，坐和放宽',
+    manual: '点击夜空任意位置，礼花弹会飞到那里开花',
+    layout: '点击水面布置炮位（右键删除），然后齐射或顺序播放',
+    auto: '自动编排的完整表演：开场 → 多个段落 → 压轴齐放',
   };
   const footHints = {
-    manual: '🖱 点击夜空燃放 · 空格键快速发射',
-    layout: '🖱 点击地面布置炮位 · 右键删除最近炮位',
-    auto: '🎆 自动表演中 · 点击夜空可随时加放一发',
+    manual: '点击夜空燃放 · 拖拽旋转视角 · 滚轮推拉 · 右键拖拽平移 · 空格快射 · F 冻结时间',
+    layout: '点击水面布置炮位 · 右键点击删除 · 点击夜空试放 · 拖拽旋转视角',
+    auto: '自动表演中 · 点击夜空可随时加放 · 拖拽旋转视角 · F 冻结时间后可绕着烟花看',
   };
-  $('modeSeg').querySelectorAll('button').forEach(btn => {
-    btn.onclick = () => {
-      state.mode = btn.dataset.mode;
-      $('modeSeg').querySelectorAll('button').forEach(b => b.classList.remove('active'));
-      btn.classList.add('active');
-      $('modeHint').textContent = modeHints[state.mode];
-      $('footHint').textContent = footHints[state.mode];
-      $('layoutPanel').style.display = state.mode === 'layout' ? '' : 'none';
-      state.autoTimer = 0;
-    };
-  });
-
-  // 画布点击
-  uiCanvas.addEventListener('pointerdown', e => {
-    if (e.button !== 0) return;
-    SFX.unlock();
-    const x = e.clientX, y = e.clientY;
-    if (state.mode === 'layout' && y > H * 0.6) {
-      state.launchers.push({ x, typeId: state.typeId, palette: state.palette, power: state.power });
-      $('layoutCount').textContent = `已布置 ${state.launchers.length} 个炮位`;
-      return;
-    }
-    // 手动/自动：向点击处发射；布局模式点击上方也可试放
-    const targetY = Math.min(Math.max(y, H * 0.08), H * 0.72);
-    sys.launch(x + (Math.random() - 0.5) * 30, targetY, { tx: x });
-  });
-
-  // 右键删除最近炮位
-  uiCanvas.addEventListener('contextmenu', e => {
-    e.preventDefault();
-    if (state.mode === 'layout' && state.launchers.length) {
-      let best = -1, bd = 1e9;
-      state.launchers.forEach((L, i) => {
-        const d = Math.abs(L.x - e.clientX);
-        if (d < bd) { bd = d; best = i; }
-      });
-      if (bd < 60) {
-        state.launchers.splice(best, 1);
-        $('layoutCount').textContent = `已布置 ${state.launchers.length} 个炮位`;
-      }
-    }
-  });
-
-  // 空格快速发射
-  window.addEventListener('keydown', e => {
-    if (e.code === 'Space' && !e.repeat) {
-      e.preventDefault();
-      SFX.unlock();
-      sys.launch(W * (0.2 + Math.random() * 0.6), H * (0.15 + Math.random() * 0.3));
-    }
-  });
-
-  /* ---------- 布局编排 ---------- */
-  function fireLauncher(L) {
-    sys.launch(L.x, H * (state.heightRatio - 0.35) + Math.random() * H * 0.08,
-      { typeId: L.typeId, palette: L.palette, power: L.power });
+  function setMode(mode) {
+    if (mode === 'layout' && state.mode !== 'layout') cam.preset('aerial');     // 俯视水面才方便摆炮位
+    state.mode = mode;
+    $('modeSeg').querySelectorAll('button').forEach(b => b.classList.toggle('active', b.dataset.mode === mode));
+    $('modeHint').textContent = modeHints[mode];
+    $('footHint').textContent = footHints[mode];
+    $('layoutPanel').style.display = mode === 'layout' ? '' : 'none';
+    if (mode === 'auto') show.start(); else show.stop();
   }
-  $('fireAll').onclick = () => {
-    SFX.unlock();
-    state.launchers.forEach((L, i) => setTimeout(() => fireLauncher(L), Math.random() * 180));
-  };
+  $('modeSeg').querySelectorAll('button').forEach(btn => { btn.onclick = () => { SFX.unlock(); setMode(btn.dataset.mode); }; });
+
+  // 布局编排
+  $('fireAll').onclick = () => { SFX.unlock(); state.mortars.forEach(m => sim.at(Math.random() * 0.12, () => fireMortar(m), 'layout')); };
   $('fireSeq').onclick = () => {
     SFX.unlock();
-    const delay = +$('seqDelay').value;
-    state.launchers.forEach((L, i) => setTimeout(() => fireLauncher(L), i * delay));
+    const delay = +$('seqDelay').value / 1000;
+    state.mortars.forEach((m, i) => sim.at(i * delay, () => fireMortar(m), 'layout'));
   };
-  $('clearLayout').onclick = () => {
-    state.launchers = [];
-    $('layoutCount').textContent = '已布置 0 个炮位';
-  };
-  $('seqDelay').oninput = e => $('seqDelayVal').textContent = e.target.value + 'ms';
+  $('clearLayout').onclick = () => { state.mortars = []; sim.cancel('layout'); mortarsChanged(); };
+  $('seqDelay').oninput = e => ($('seqDelayVal').textContent = e.target.value + 'ms');
+  const preset = fn => { state.mortars = fn(); mortarsChanged(); };
+  const M = (x, typeId, palette, cal, tiltX = 0, z = 0) => ({ x, z, typeId, palette, caliber: cal, tiltX });
+  $('presetFan').onclick = () => preset(() => Array.from({ length: 9 }, (_, i) => M((i - 4) * 5, state.typeId, state.palette, caliber(), (i - 4) * 0.14)));
+  $('presetWave').onclick = () => preset(() => {
+    const types = ['peony', 'chrys', 'peony', 'strobe', 'double', 'strobe', 'peony', 'chrys', 'peony'];
+    return types.map((t, i) => M(-100 + i * 25, t, state.palette, 5));
+  });
+  $('presetCenter').onclick = () => preset(() => [
+    M(-90, 'willow', FW.PALETTE_MAP.gold, 8), M(-45, 'peony', state.palette, 6), M(0, 'senrin', FW.PALETTE_MAP.rainbow, 10),
+    M(45, 'peony', state.palette, 6), M(90, 'willow', FW.PALETTE_MAP.gold, 8),
+  ]);
+  $('presetCross').onclick = () => preset(() => {
+    const a = [];
+    for (let i = 0; i < 6; i++) { a.push(M(-100, 'comet', state.palette, 4, 0.12 + i * 0.1)); a.push(M(100, 'comet', state.palette, 4, -0.12 - i * 0.1)); }
+    return a;
+  });
 
-  // 预设布局
-  function applyPreset(fn) {
-    state.launchers = fn();
-    $('layoutCount').textContent = `已布置 ${state.launchers.length} 个炮位`;
+  // 镜头
+  const camRow = $('camRow');
+  Object.entries(FW.CAM_PRESETS).forEach(([id, p], i) => {
+    const b = document.createElement('button');
+    b.textContent = p.name; b.title = `快捷键 ${i + 1}`;
+    b.onclick = () => cam.preset(id);
+    camRow.appendChild(b);
+  });
+  $('orbitToggle').onchange = e => (cam.autoOrbit = e.target.checked);
+
+  // 时间
+  function setFrozen(v) {
+    state.frozen = v;
+    $('freezeBtn').classList.toggle('on', v);
+    $('freezeBtn').textContent = v ? '▶ 恢复时间' : '❄ 冻结时间';
   }
-  $('presetFan').onclick = () => applyPreset(() => {
-    const arr = [];
-    for (let i = 0; i < 7; i++)
-      arr.push({ x: W * (0.2 + i * 0.1), typeId: state.typeId, palette: state.palette, power: state.power * 0.9 });
-    return arr;
+  $('freezeBtn').onclick = () => setFrozen(!state.frozen);
+  $('speedSlider').oninput = e => {
+    state.timeScale = +e.target.value;
+    SFX.timeScale = state.timeScale;
+    $('speedVal').textContent = state.timeScale.toFixed(2) + '×';
+  };
+
+  // 环境
+  $('windSlider').oninput = e => { state.windSpeed = +e.target.value; $('windVal').textContent = state.windSpeed.toFixed(1) + ' m/s'; applyWind(); };
+  $('windDirSlider').oninput = e => { state.windDir = +e.target.value; $('windDirVal').textContent = state.windDir + '°'; applyWind(); };
+
+  // 画质
+  $('qualitySeg').querySelectorAll('button').forEach(btn => {
+    btn.onclick = () => {
+      $('qualitySeg').querySelectorAll('button').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      applyQuality(btn.dataset.q);
+    };
   });
-  $('presetWave').onclick = () => applyPreset(() => {
-    const arr = [];
-    const types = ['peony', 'chrys', 'peony', 'strobe', 'peony', 'chrys', 'peony', 'strobe', 'peony'];
-    for (let i = 0; i < 9; i++)
-      arr.push({ x: W * (0.12 + i * 0.095), typeId: types[i], palette: state.palette, power: 0.8 });
-    return arr;
-  });
-  $('presetCenter').onclick = () => applyPreset(() => ([
-    { x: W * 0.3,  typeId: 'willow',  palette: PALETTES[1], power: 1.1 },
-    { x: W * 0.42, typeId: 'peony',   palette: state.palette, power: 1.0 },
-    { x: W * 0.5,  typeId: 'kamuro',  palette: PALETTES[1], power: 1.6 },
-    { x: W * 0.58, typeId: 'peony',   palette: state.palette, power: 1.0 },
-    { x: W * 0.7,  typeId: 'willow',  palette: PALETTES[1], power: 1.1 },
-  ]));
+  $('bloomSlider').oninput = e => { renderer.opt.bloom = +e.target.value; $('bloomVal').textContent = (+e.target.value).toFixed(1); };
+  $('expSlider').oninput = e => { renderer.opt.exposure = +e.target.value; $('expVal').textContent = (+e.target.value).toFixed(1); };
 
   // 开关
   $('soundToggle').onchange = e => { SFX.enabled = e.target.checked; if (e.target.checked) SFX.unlock(); };
-  $('flashToggle').onchange = e => state.flash = e.target.checked;
+  $('delayToggle').onchange = e => (SFX.delay = e.target.checked);
+  $('flashToggle').onchange = e => (sim.lightsOn = e.target.checked);
+  $('reflToggle').onchange = e => (renderer.opt.reflection = e.target.checked);
+  $('smokeToggle').onchange = e => { renderer.opt.smoke = sim.smokeOn = e.target.checked; if (!e.target.checked) sim.smoke.length = 0; };
 
-  // 面板收起
+  // 面板与弹窗
   $('panelToggle').onclick = () => $('panel').classList.toggle('collapsed');
-
-  // 原理弹窗
-  $('principleBtn').onclick = () => $('principleModal').style.display = '';
-  $('principleClose').onclick = () => $('principleModal').style.display = 'none';
+  $('principleBtn').onclick = () => ($('principleModal').style.display = '');
+  $('principleClose').onclick = () => ($('principleModal').style.display = 'none');
   $('principleModal').onclick = e => { if (e.target === $('principleModal')) $('principleModal').style.display = 'none'; };
+
+  // 键盘
+  const presetIds = Object.keys(FW.CAM_PRESETS);
+  window.addEventListener('keydown', e => {
+    if (e.target && /INPUT|TEXTAREA|SELECT/.test(e.target.tagName) && e.target.type !== 'range' && e.target.type !== 'checkbox') return;
+    if (e.code === 'Space') { if (!e.repeat) { e.preventDefault(); SFX.unlock(); fireRandom(); } }
+    else if (e.code === 'KeyF') setFrozen(!state.frozen);
+    else if (e.code === 'KeyR') { cam.autoOrbit = !cam.autoOrbit; $('orbitToggle').checked = cam.autoOrbit; }
+    else if (e.code === 'KeyH') document.body.classList.toggle('ui-hidden');
+    else if (/^Digit[1-6]$/.test(e.code)) cam.preset(presetIds[+e.code.slice(5) - 1]);
+  });
 
   /* ---------- 启动 ---------- */
   window.addEventListener('resize', resize);
   resize();
-  loop();
+  mortarsChanged();
+  setMode('manual');
+  requestAnimationFrame(frame);
 
   // 开场小演出
-  setTimeout(() => sys.launch(W * 0.5, H * 0.28, { typeId: 'kamuro', power: 1.3, palette: PALETTES[1] }), 600);
-  setTimeout(() => sys.launch(W * 0.32, H * 0.35, { typeId: 'peony', power: 0.9, palette: PALETTES[0] }), 1300);
-  setTimeout(() => sys.launch(W * 0.68, H * 0.33, { typeId: 'chrys', power: 0.9, palette: PALETTES[3] }), 1800);
+  const G = FW.PALETTE_MAP;
+  sim.at(0.3, () => fireAt([0, 215, 0], { typeId: 'kamuro', caliber: 8, palette: G.gold }));
+  sim.at(1.6, () => fireAt([-120, 170, 10], { typeId: 'peony', caliber: 6, palette: G.redgold }));
+  sim.at(2.3, () => fireAt([125, 180, -10], { typeId: 'chrys', caliber: 6, palette: G.blue }));
 })();
